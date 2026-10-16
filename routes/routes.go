@@ -13,6 +13,7 @@ func SetupRoutes(app *fiber.App) {
 	// Auth routes
 	api.Post("/register", controllers.Register)
 	api.Post("/login", controllers.Login)
+	api.Post("/refresh", controllers.RefreshToken)
 	api.Get("/profile", middleware.Protected, controllers.Profile)
 
 	// Singer routes

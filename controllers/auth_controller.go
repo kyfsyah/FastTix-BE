@@ -1,8 +1,11 @@
 package controllers
 
 import (
+	"fmt"
 	"os"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"fasttix-backend/config"
@@ -110,30 +113,147 @@ func Login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{Message: "Email atau password salah"})
 	}
 
-	// Generate JWT
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"user_id": user.ID,
-		"nama":    user.Nama,
-		"email":   user.Email,
-		"role_id": user.RoleID,
-		"role":    user.Role,
-		"exp":     time.Now().Add(time.Hour * 72).Unix(),
-	})
-
-	secretKey := os.Getenv("JWT_SECRET")
-	tokenString, err := token.SignedString([]byte(secretKey))
+	// Generate Access and Refresh Tokens
+	accessToken, refreshToken, err := generateTokens(user)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
-			Message: "Gagal membuat token",
+			Message: "Gagal membuat token autentikasi",
 			Error:   err.Error(),
 		})
 	}
 
 	return c.JSON(models.LoginResponse{
-		Message: "Login berhasil",
-		Token:   tokenString,
-		User:    user,
+		Message:      "Login berhasil",
+		Token:        accessToken,
+		RefreshToken: refreshToken,
+		User:         user,
 	})
+}
+
+// RefreshToken - POST /api/refresh (Tukar refresh token lama dengan access token baru)
+func RefreshToken(c *fiber.Ctx) error {
+	req := new(models.RefreshRequest)
+	if err := c.BodyParser(req); err != nil || strings.TrimSpace(req.RefreshToken) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Message: "Format request tidak valid atau refresh_token kosong",
+		})
+	}
+
+	secretKey := os.Getenv("JWT_SECRET")
+
+	token, err := jwt.Parse(req.RefreshToken, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(secretKey), nil
+	})
+
+	if err != nil || !token.Valid {
+		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
+			Message: "Refresh token tidak valid atau telah kadaluarsa",
+		})
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
+			Message: "Klaim token tidak valid",
+		})
+	}
+
+	// Pastikan jenis token adalah refresh token
+	if tokenType, ok := claims["token_type"].(string); !ok || tokenType != "refresh" {
+		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
+			Message: "Token yang diberikan bukan refresh token yang sah",
+		})
+	}
+
+	userIDFloat, ok := claims["user_id"].(float64)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
+			Message: "Data user pada token tidak valid",
+		})
+	}
+	userID := int(userIDFloat)
+
+	// Ambil data user terkini dari database
+	var user models.User
+	err = config.DB.Table("users").
+		Select("users.id, users.nama, users.email, users.no_hp, users.role_id, r.nama_role as role").
+		Joins("JOIN roles r ON users.role_id = r.id").
+		Where("users.id = ?", userID).
+		Scan(&user).Error
+
+	if err != nil || user.ID == 0 {
+		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
+			Message: "Pengguna tidak ditemukan atau telah dinonaktifkan",
+		})
+	}
+
+	// Buat access token & refresh token baru
+	newAccessToken, newRefreshToken, err := generateTokens(user)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Message: "Gagal memperbarui token",
+			Error:   err.Error(),
+		})
+	}
+
+	return c.JSON(models.RefreshResponse{
+		Message:      "Token berhasil diperbarui",
+		Token:        newAccessToken,
+		RefreshToken: newRefreshToken,
+	})
+}
+
+func getAccessExpDuration() time.Duration {
+	val := os.Getenv("JWT_ACCESS_EXP_MINUTES")
+	if minutes, err := strconv.Atoi(val); err == nil && minutes > 0 {
+		return time.Duration(minutes) * time.Minute
+	}
+	return 15 * time.Minute // default 15 menit
+}
+
+func getRefreshExpDuration() time.Duration {
+	val := os.Getenv("JWT_REFRESH_EXP_DAYS")
+	if days, err := strconv.Atoi(val); err == nil && days > 0 {
+		return time.Duration(days) * 24 * time.Hour
+	}
+	return 7 * 24 * time.Hour // default 7 hari
+}
+
+func generateTokens(user models.User) (string, string, error) {
+	secretKey := os.Getenv("JWT_SECRET")
+
+	// 1. Access Token (masa aktif menit, default 15 menit)
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id":    user.ID,
+		"nama":       user.Nama,
+		"email":      user.Email,
+		"role_id":    user.RoleID,
+		"role":       user.Role,
+		"token_type": "access",
+		"exp":        time.Now().Add(getAccessExpDuration()).Unix(),
+	})
+
+	accessString, err := accessToken.SignedString([]byte(secretKey))
+	if err != nil {
+		return "", "", err
+	}
+
+	// 2. Refresh Token (masa aktif hari, default 7 hari)
+	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id":    user.ID,
+		"token_type": "refresh",
+		"exp":        time.Now().Add(getRefreshExpDuration()).Unix(),
+	})
+
+	refreshString, err := refreshToken.SignedString([]byte(secretKey))
+	if err != nil {
+		return "", "", err
+	}
+
+	return accessString, refreshString, nil
 }
 
 func Profile(c *fiber.Ctx) error {

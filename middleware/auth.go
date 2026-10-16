@@ -43,6 +43,12 @@ func Protected(c *fiber.Ctx) error {
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		// Pastikan token yang digunakan adalah access token
+		if tokenType, ok := claims["token_type"].(string); ok && tokenType != "access" {
+			return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
+				Message: "Unauthorized: Token yang digunakan bukan access token",
+			})
+		}
 		// Set user claims in context
 		c.Locals("user", claims)
 		return c.Next()
