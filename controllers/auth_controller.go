@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -15,6 +17,32 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+func getJWTSecret() (string, error) {
+	secretKey := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if secretKey == "" {
+		return "", errors.New("JWT_SECRET belum dikonfigurasi pada environment variables")
+	}
+	return secretKey, nil
+}
+
+func extractUserIDFromClaims(claims jwt.MapClaims) (int, bool) {
+	if val, ok := claims["user_id"]; ok && val != nil {
+		switch v := val.(type) {
+		case float64:
+			return int(v), true
+		case int:
+			return v, true
+		case int64:
+			return int(v), true
+		case string:
+			if id, err := strconv.Atoi(v); err == nil {
+				return id, true
+			}
+		}
+	}
+	return 0, false
+}
+
 func Register(c *fiber.Ctx) error {
 	req := new(models.RegisterRequest)
 	if err := c.BodyParser(req); err != nil {
@@ -25,10 +53,10 @@ func Register(c *fiber.Ctx) error {
 	}
 
 	// Validation
-	if req.Nama == "" {
+	if strings.TrimSpace(req.Nama) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{Message: "Nama wajib diisi"})
 	}
-	if req.Email == "" {
+	if strings.TrimSpace(req.Email) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{Message: "Email wajib diisi"})
 	}
 	if !isValidEmail(req.Email) {
@@ -38,9 +66,9 @@ func Register(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{Message: "Password minimal 8 karakter"})
 	}
 
-	// Check if email already exists using GORM
+	// Check if email already exists using GORM with context
 	var count int64
-	if err := config.DB.Model(&models.User{}).Where("email = ?", req.Email).Count(&count).Error; err != nil {
+	if err := config.DB.WithContext(c.UserContext()).Model(&models.User{}).Where("email = ?", req.Email).Count(&count).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Message: "Terjadi kesalahan pada server",
 			Error:   err.Error(),
@@ -59,16 +87,25 @@ func Register(c *fiber.Ctx) error {
 		})
 	}
 
-	// Insert into DB with default role_id = 3 (customer)
+	// Query default role 'customer' / 'user' secara dinamis alih-alih hardcode ID 3
+	var defaultRole models.Role
+	roleID := 3 // fallback default jika lookup gagal
+	if err := config.DB.WithContext(c.UserContext()).
+		Where("LOWER(nama_role) IN ?", []string{"customer", "user"}).
+		Order("id ASC").
+		First(&defaultRole).Error; err == nil && defaultRole.ID > 0 {
+		roleID = defaultRole.ID
+	}
+
 	newUser := models.User{
 		Nama:     req.Nama,
 		Email:    req.Email,
 		Password: string(hashedPassword),
 		NoHP:     req.NoHP,
-		RoleID:   3,
+		RoleID:   roleID,
 	}
 
-	if err := config.DB.Create(&newUser).Error; err != nil {
+	if err := config.DB.WithContext(c.UserContext()).Create(&newUser).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Message: "Gagal menyimpan user",
 			Error:   err.Error(),
@@ -89,22 +126,34 @@ func Login(c *fiber.Ctx) error {
 		})
 	}
 
-	if req.Email == "" || req.Password == "" {
+	if strings.TrimSpace(req.Email) == "" || strings.TrimSpace(req.Password) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{Message: "Email dan password wajib diisi"})
+	}
+
+	// Validasi format email saat login
+	if !isValidEmail(req.Email) {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{Message: "Format email tidak valid"})
 	}
 
 	var user models.User
 	var hashedPassword string
 
-	// Query user with role name via GORM
-	err := config.DB.Table("users").
+	// Query user with role name via GORM with context
+	err := config.DB.WithContext(c.UserContext()).Table("users").
 		Select("users.id, users.nama, users.email, users.password, users.no_hp, users.role_id, r.nama_role as role").
 		Joins("JOIN roles r ON users.role_id = r.id").
 		Where("users.email = ?", req.Email).
 		Row().Scan(&user.ID, &user.Nama, &user.Email, &hashedPassword, &user.NoHP, &user.RoleID, &user.Role)
 
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{Message: "Email atau password salah"})
+		// Bedakan data tidak ditemukan (401) vs error server/database (500)
+		if errors.Is(err, sql.ErrNoRows) {
+			return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{Message: "Email atau password salah"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Message: "Terjadi kesalahan pada server saat memproses login",
+			Error:   err.Error(),
+		})
 	}
 
 	// Compare passwords
@@ -139,7 +188,13 @@ func RefreshToken(c *fiber.Ctx) error {
 		})
 	}
 
-	secretKey := os.Getenv("JWT_SECRET")
+	secretKey, err := getJWTSecret()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Message: "Konfigurasi server JWT_SECRET belum diatur",
+			Error:   err.Error(),
+		})
+	}
 
 	token, err := jwt.Parse(req.RefreshToken, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -168,23 +223,29 @@ func RefreshToken(c *fiber.Ctx) error {
 		})
 	}
 
-	userIDFloat, ok := claims["user_id"].(float64)
-	if !ok {
+	userID, ok := extractUserIDFromClaims(claims)
+	if !ok || userID <= 0 {
 		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
 			Message: "Data user pada token tidak valid",
 		})
 	}
-	userID := int(userIDFloat)
 
-	// Ambil data user terkini dari database
+	// Ambil data user terkini dari database with context
 	var user models.User
-	err = config.DB.Table("users").
+	err = config.DB.WithContext(c.UserContext()).Table("users").
 		Select("users.id, users.nama, users.email, users.no_hp, users.role_id, r.nama_role as role").
 		Joins("JOIN roles r ON users.role_id = r.id").
 		Where("users.id = ?", userID).
 		Scan(&user).Error
 
-	if err != nil || user.ID == 0 {
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Message: "Terjadi kesalahan pada server saat memverifikasi pengguna",
+			Error:   err.Error(),
+		})
+	}
+
+	if user.ID == 0 {
 		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
 			Message: "Pengguna tidak ditemukan atau telah dinonaktifkan",
 		})
@@ -223,7 +284,10 @@ func getRefreshExpDuration() time.Duration {
 }
 
 func generateTokens(user models.User) (string, string, error) {
-	secretKey := os.Getenv("JWT_SECRET")
+	secretKey, err := getJWTSecret()
+	if err != nil {
+		return "", "", err
+	}
 
 	// 1. Access Token (masa aktif menit, default 15 menit)
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
@@ -265,25 +329,32 @@ func Profile(c *fiber.Ctx) error {
 		})
 	}
 
-	userID := int(userClaims["user_id"].(float64))
+	userID, ok := extractUserIDFromClaims(userClaims)
+	if !ok || userID <= 0 {
+		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
+			Message: "Unauthorized: ID pengguna pada token tidak valid",
+		})
+	}
 
-	// Fetch fresh user data with role from DB using GORM
+	// Fetch fresh user data with role directly from DB using GORM with context
 	var user models.User
-	err := config.DB.Table("users").
+	err := config.DB.WithContext(c.UserContext()).Table("users").
 		Select("users.id, users.nama, users.email, users.no_hp, users.role_id, r.nama_role as role").
 		Joins("JOIN roles r ON users.role_id = r.id").
 		Where("users.id = ?", userID).
 		Scan(&user).Error
 
-	if err != nil || user.ID == 0 {
-		// Fallback to JWT claims if DB fetch fails
-		user = models.User{
-			ID:     userID,
-			Nama:   userClaims["nama"].(string),
-			Email:  userClaims["email"].(string),
-			RoleID: int(userClaims["role_id"].(float64)),
-			Role:   userClaims["role"].(string),
-		}
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Message: "Terjadi kesalahan pada server saat mengambil profil pengguna",
+			Error:   err.Error(),
+		})
+	}
+
+	if user.ID == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
+			Message: "Pengguna tidak ditemukan",
+		})
 	}
 
 	return c.JSON(models.ProfileResponse{

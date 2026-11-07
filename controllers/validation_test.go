@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func TestIsValidEmail(t *testing.T) {
@@ -100,5 +102,84 @@ func TestJwtExpirationConfig(t *testing.T) {
 	}
 	if dur := getRefreshExpDuration(); dur != 14*24*time.Hour {
 		t.Errorf("expected custom 14d, got %v", dur)
+	}
+}
+
+func TestGetJWTSecret(t *testing.T) {
+	// 1. Unset JWT_SECRET
+	os.Unsetenv("JWT_SECRET")
+	secret, err := getJWTSecret()
+	if err == nil || secret != "" {
+		t.Errorf("expected error when JWT_SECRET is unset, got secret %q", secret)
+	}
+
+	// 2. Set whitespace only
+	os.Setenv("JWT_SECRET", "   ")
+	secret, err = getJWTSecret()
+	if err == nil || secret != "" {
+		t.Errorf("expected error when JWT_SECRET is only whitespace, got secret %q", secret)
+	}
+
+	// 3. Valid secret
+	os.Setenv("JWT_SECRET", "my_super_secret")
+	secret, err = getJWTSecret()
+	if err != nil || secret != "my_super_secret" {
+		t.Errorf("expected secret 'my_super_secret', got %q with error: %v", secret, err)
+	}
+}
+
+func TestExtractUserIDFromClaims(t *testing.T) {
+	tests := []struct {
+		name        string
+		claims      jwt.MapClaims
+		expectedID  int
+		expectedOK  bool
+	}{
+		{
+			name:        "Float64 user_id (standard jwt unmarshal)",
+			claims:      jwt.MapClaims{"user_id": float64(12)},
+			expectedID:  12,
+			expectedOK:  true,
+		},
+		{
+			name:        "Int user_id",
+			claims:      jwt.MapClaims{"user_id": 45},
+			expectedID:  45,
+			expectedOK:  true,
+		},
+		{
+			name:        "String user_id",
+			claims:      jwt.MapClaims{"user_id": "78"},
+			expectedID:  78,
+			expectedOK:  true,
+		},
+		{
+			name:        "Missing user_id",
+			claims:      jwt.MapClaims{"email": "test@example.com"},
+			expectedID:  0,
+			expectedOK:  false,
+		},
+		{
+			name:        "Invalid string user_id",
+			claims:      jwt.MapClaims{"user_id": "not-a-number"},
+			expectedID:  0,
+			expectedOK:  false,
+		},
+		{
+			name:        "Nil user_id",
+			claims:      jwt.MapClaims{"user_id": nil},
+			expectedID:  0,
+			expectedOK:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id, ok := extractUserIDFromClaims(tc.claims)
+			if ok != tc.expectedOK || id != tc.expectedID {
+				t.Errorf("[%s] extractUserIDFromClaims() = (%v, %v), expected (%v, %v)",
+					tc.name, id, ok, tc.expectedID, tc.expectedOK)
+			}
+		})
 	}
 }

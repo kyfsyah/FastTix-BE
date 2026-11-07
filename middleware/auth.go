@@ -26,7 +26,12 @@ func Protected(c *fiber.Ctx) error {
 	}
 
 	tokenString := parts[1]
-	secretKey := os.Getenv("JWT_SECRET")
+	secretKey := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if secretKey == "" {
+		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+			Message: "Internal server error: JWT_SECRET belum dikonfigurasi",
+		})
+	}
 
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		// Validate the alg is what you expect:
