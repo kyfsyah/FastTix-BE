@@ -29,6 +29,31 @@ func TestIsValidEmail(t *testing.T) {
 	}
 }
 
+func TestIsValidPhone(t *testing.T) {
+	tests := []struct {
+		phone    string
+		expected bool
+	}{
+		{"081234567890", true},
+		{"+6281234567890", true},
+		{"6281234567890", true},
+		{"0812345678", true}, // 10 digit
+		{"081234567", false}, // 9 digit (terlalu pendek)
+		{"0812345678901234", false}, // 16 digit (terlalu panjang)
+		{"not-a-number", false},
+		{"0812abc34567", false},
+		{"", false},
+		{"   ", false},
+	}
+
+	for _, tc := range tests {
+		result := isValidPhone(tc.phone)
+		if result != tc.expected {
+			t.Errorf("isValidPhone(%q) = %v, expected %v", tc.phone, result, tc.expected)
+		}
+	}
+}
+
 func TestParseFlexibleDateTime(t *testing.T) {
 	tests := []struct {
 		input       string

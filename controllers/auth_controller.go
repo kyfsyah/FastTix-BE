@@ -62,6 +62,12 @@ func Register(c *fiber.Ctx) error {
 	if !isValidEmail(req.Email) {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{Message: "Format email tidak valid"})
 	}
+	if strings.TrimSpace(req.NoHP) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{Message: "Nomor HP wajib diisi"})
+	}
+	if !isValidPhone(req.NoHP) {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{Message: "Format nomor HP tidak valid (minimal 10-15 digit angka)"})
+	}
 	if req.Password == "" || len(req.Password) < 8 {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{Message: "Password minimal 8 karakter"})
 	}
@@ -98,10 +104,10 @@ func Register(c *fiber.Ctx) error {
 	}
 
 	newUser := models.User{
-		Nama:     req.Nama,
-		Email:    req.Email,
+		Nama:     strings.TrimSpace(req.Nama),
+		Email:    strings.TrimSpace(req.Email),
 		Password: string(hashedPassword),
-		NoHP:     req.NoHP,
+		NoHP:     strings.TrimSpace(req.NoHP),
 		RoleID:   roleID,
 	}
 
@@ -366,4 +372,10 @@ func Profile(c *fiber.Ctx) error {
 func isValidEmail(email string) bool {
 	regex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 	return regex.MatchString(email)
+}
+
+func isValidPhone(phone string) bool {
+	phone = strings.TrimSpace(phone)
+	regex := regexp.MustCompile(`^(\+?[0-9]{10,15})$`)
+	return regex.MatchString(phone)
 }
