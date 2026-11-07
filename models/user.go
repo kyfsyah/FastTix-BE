@@ -33,10 +33,12 @@ func (User) TableName() string {
 // Request & Response structs
 
 type RegisterRequest struct {
-	Nama     string `json:"nama"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	NoHP     string `json:"no_hp"`
+	Nama        string `json:"nama"`
+	Username    string `json:"username,omitempty"`
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+	NoHP        string `json:"no_hp"`
+	PhoneNumber string `json:"phone_number,omitempty"`
 }
 
 type LoginRequest struct {
