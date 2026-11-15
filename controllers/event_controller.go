@@ -10,6 +10,7 @@ import (
 	"fasttix-backend/config"
 	"fasttix-backend/models"
 	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/gorm"
 )
 
@@ -19,6 +20,18 @@ var validEventStatuses = map[string]bool{
 	"ongoing":   true,
 	"completed": true,
 	"cancelled": true,
+}
+
+func getAuthUser(c *fiber.Ctx) (userID int, role string) {
+	if claims, ok := c.Locals("user").(jwt.MapClaims); ok {
+		if r, ok := claims["role"].(string); ok {
+			role = strings.ToLower(strings.TrimSpace(r))
+		}
+		if id, ok := extractUserIDFromClaims(claims); ok {
+			userID = id
+		}
+	}
+	return userID, role
 }
 
 func parseFlexibleDateTime(dateStr string) (time.Time, error) {
@@ -39,7 +52,7 @@ func parseFlexibleDateTime(dateStr string) (time.Time, error) {
 }
 
 // processAndValidatePerformers validates and prepares performer records for insertion
-func processAndValidatePerformers(rawPerformers []models.PerformerItemRequest) ([]models.EventPerformer, error) {
+func processAndValidatePerformers(c *fiber.Ctx, rawPerformers []models.PerformerItemRequest) ([]models.EventPerformer, error) {
 	var performers []models.EventPerformer
 	seenSingers := make(map[int]bool)
 	seenBands := make(map[int]bool)
@@ -56,15 +69,18 @@ func processAndValidatePerformers(rawPerformers []models.PerformerItemRequest) (
 			bID = item.BandID
 		}
 
-		if strings.EqualFold(item.Type, "singer") && item.ID > 0 {
-			if sID == nil {
-				id := item.ID
-				sID = &id
-			}
-		} else if strings.EqualFold(item.Type, "band") && item.ID > 0 {
-			if bID == nil {
-				id := item.ID
-				bID = &id
+		if item.ID > 0 {
+			switch strings.ToLower(item.Type) {
+			case "singer":
+				if sID == nil {
+					id := item.ID
+					sID = &id
+				}
+			case "band":
+				if bID == nil {
+					id := item.ID
+					bID = &id
+				}
 			}
 		}
 
@@ -81,7 +97,7 @@ func processAndValidatePerformers(rawPerformers []models.PerformerItemRequest) (
 
 			// Verify singer exists in database
 			var singerExists bool
-			if err := config.DB.Model(&models.Singer{}).
+			if err := config.DB.WithContext(c.UserContext()).Model(&models.Singer{}).
 				Select("count(*) > 0").
 				Where("id = ?", *sID).
 				Find(&singerExists).Error; err != nil || !singerExists {
@@ -101,7 +117,7 @@ func processAndValidatePerformers(rawPerformers []models.PerformerItemRequest) (
 
 			// Verify band exists in database
 			var bandExists bool
-			if err := config.DB.Model(&models.Band{}).
+			if err := config.DB.WithContext(c.UserContext()).Model(&models.Band{}).
 				Select("count(*) > 0").
 				Where("id = ?", *bID).
 				Find(&bandExists).Error; err != nil || !bandExists {
@@ -117,7 +133,7 @@ func processAndValidatePerformers(rawPerformers []models.PerformerItemRequest) (
 	return performers, nil
 }
 
-// CreateEvent - POST /api/events (Admin only)
+// CreateEvent - POST /api/events (Admin or Organizer)
 func CreateEvent(c *fiber.Ctx) error {
 	req := new(models.EventRequest)
 	if err := c.BodyParser(req); err != nil {
@@ -133,10 +149,52 @@ func CreateEvent(c *fiber.Ctx) error {
 		})
 	}
 
-	if strings.TrimSpace(req.Lokasi) == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
-			Message: "Lokasi konser wajib diisi",
-		})
+	// Validasi venue_id jika dikirim
+	if req.VenueID != nil {
+		if *req.VenueID <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+				Message: "venue_id tidak valid",
+			})
+		}
+
+		// Periksa apakah venue benar-benar tersedia di database
+		var venue models.Venue
+		if err := config.DB.WithContext(c.UserContext()).First(&venue, *req.VenueID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+					Message: fmt.Sprintf("Venue dengan ID %d tidak ditemukan di database", *req.VenueID),
+				})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+				Message: "Gagal memverifikasi data venue",
+				Error:   err.Error(),
+			})
+		}
+	}
+
+	// Identifikasi organizer dari autentikasi pengguna
+	currentUserID, currentUserRole := getAuthUser(c)
+	var organizerID *int
+
+	switch currentUserRole {
+	case "organizer":
+		// Jika role adalah organizer, ikat organizer_id ke ID user yang sedang login
+		if currentUserID > 0 {
+			organizerID = &currentUserID
+		}
+	case "admin", "super_admin":
+		// Jika role admin/super_admin, boleh menentukan organizer_id yang valid
+		if req.OrganizerID != nil && *req.OrganizerID > 0 {
+			var count int64
+			if err := config.DB.WithContext(c.UserContext()).Table("users").
+				Where("id = ?", *req.OrganizerID).Count(&count).Error; err == nil && count > 0 {
+				organizerID = req.OrganizerID
+			} else {
+				return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+					Message: fmt.Sprintf("Organizer dengan ID %d tidak ditemukan", *req.OrganizerID),
+				})
+			}
+		}
 	}
 
 	if strings.TrimSpace(req.TanggalMulai) == "" {
@@ -185,7 +243,7 @@ func CreateEvent(c *fiber.Ctx) error {
 	}
 
 	// Validate performers
-	performersToInsert, err := processAndValidatePerformers(req.Performers)
+	performersToInsert, err := processAndValidatePerformers(c, req.Performers)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
 			Message: err.Error(),
@@ -193,9 +251,10 @@ func CreateEvent(c *fiber.Ctx) error {
 	}
 
 	event := models.Event{
-		NamaKonser:      req.NamaKonser,
+		NamaKonser:      strings.TrimSpace(req.NamaKonser),
 		Deskripsi:       req.Deskripsi,
-		Lokasi:          req.Lokasi,
+		VenueID:         req.VenueID,
+		OrganizerID:     organizerID,
 		TanggalMulai:    tMulai,
 		TanggalSelesai:  tSelesai,
 		Foto:            req.Foto,
@@ -204,7 +263,7 @@ func CreateEvent(c *fiber.Ctx) error {
 	}
 
 	// GORM Transaction to insert event and performers atomically
-	err = config.DB.Transaction(func(tx *gorm.DB) error {
+	err = config.DB.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&event).Error; err != nil {
 			return err
 		}
@@ -225,8 +284,10 @@ func CreateEvent(c *fiber.Ctx) error {
 		})
 	}
 
-	// Reload event with performers populated
-	config.DB.Preload("Performers.Singer").
+	// Reload event with Venue and Performers populated
+	config.DB.WithContext(c.UserContext()).
+		Preload("Venue").
+		Preload("Performers.Singer").
 		Preload("Performers.Band").
 		First(&event, event.ID)
 
@@ -241,7 +302,7 @@ func GetEvents(c *fiber.Ctx) error {
 	var events []models.Event
 	var total int64
 
-	query := config.DB.Model(&models.Event{})
+	query := config.DB.WithContext(c.UserContext()).Model(&models.Event{})
 
 	// Optional filter by status
 	statusParam := strings.TrimSpace(c.Query("status"))
@@ -256,7 +317,8 @@ func GetEvents(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := query.Preload("Performers.Singer").
+	if err := query.Preload("Venue").
+		Preload("Performers.Singer").
 		Preload("Performers.Band").
 		Order("tanggal_mulai ASC").
 		Find(&events).Error; err != nil {
@@ -283,7 +345,9 @@ func GetEventByID(c *fiber.Ctx) error {
 	}
 
 	var event models.Event
-	if err := config.DB.Preload("Performers.Singer").
+	if err := config.DB.WithContext(c.UserContext()).
+		Preload("Venue").
+		Preload("Performers.Singer").
 		Preload("Performers.Band").
 		First(&event, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -303,7 +367,7 @@ func GetEventByID(c *fiber.Ctx) error {
 	})
 }
 
-// UpdateEvent - PUT /api/events/:id (Admin only)
+// UpdateEvent - PUT /api/events/:id (Admin or Organizer)
 func UpdateEvent(c *fiber.Ctx) error {
 	id, err := strconv.Atoi(c.Params("id"))
 	if err != nil || id <= 0 {
@@ -313,7 +377,7 @@ func UpdateEvent(c *fiber.Ctx) error {
 	}
 
 	var existingEvent models.Event
-	if err := config.DB.First(&existingEvent, id).Error; err != nil {
+	if err := config.DB.WithContext(c.UserContext()).First(&existingEvent, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
 				Message: "Konser tidak ditemukan",
@@ -325,6 +389,16 @@ func UpdateEvent(c *fiber.Ctx) error {
 		})
 	}
 
+	// Pemeriksaan otorisasi: Organizer hanya boleh mengubah event miliknya
+	currentUserID, currentUserRole := getAuthUser(c)
+	if currentUserRole == "organizer" {
+		if existingEvent.OrganizerID == nil || *existingEvent.OrganizerID != currentUserID {
+			return c.Status(fiber.StatusForbidden).JSON(models.ErrorResponse{
+				Message: "Forbidden: Anda hanya diizinkan mengubah event milik organizer Anda sendiri",
+			})
+		}
+	}
+
 	req := new(models.EventRequest)
 	if err := c.BodyParser(req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
@@ -334,16 +408,52 @@ func UpdateEvent(c *fiber.Ctx) error {
 	}
 
 	if strings.TrimSpace(req.NamaKonser) != "" {
-		existingEvent.NamaKonser = req.NamaKonser
+		existingEvent.NamaKonser = strings.TrimSpace(req.NamaKonser)
 	}
 	if req.Deskripsi != nil {
 		existingEvent.Deskripsi = req.Deskripsi
 	}
-	if strings.TrimSpace(req.Lokasi) != "" {
-		existingEvent.Lokasi = req.Lokasi
-	}
 	if req.Foto != nil {
 		existingEvent.Foto = req.Foto
+	}
+
+	// Ganti venue jika venue_id dikirimkan. Jika tidak dikirim, pertahankan venue lama.
+	if req.VenueID != nil {
+		if *req.VenueID <= 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+				Message: "venue_id tidak valid",
+			})
+		}
+
+		var venue models.Venue
+		if err := config.DB.WithContext(c.UserContext()).First(&venue, *req.VenueID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+					Message: fmt.Sprintf("Venue dengan ID %d tidak ditemukan di database", *req.VenueID),
+				})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+				Message: "Gagal memverifikasi data venue",
+				Error:   err.Error(),
+			})
+		}
+
+		existingEvent.VenueID = req.VenueID
+	}
+
+	// Hanya admin/super_admin yang dapat mengganti organizer_id saat update
+	if (currentUserRole == "admin" || currentUserRole == "super_admin") && req.OrganizerID != nil {
+		if *req.OrganizerID > 0 {
+			var count int64
+			if err := config.DB.WithContext(c.UserContext()).Table("users").
+				Where("id = ?", *req.OrganizerID).Count(&count).Error; err == nil && count > 0 {
+				existingEvent.OrganizerID = req.OrganizerID
+			} else {
+				return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+					Message: fmt.Sprintf("Organizer dengan ID %d tidak ditemukan", *req.OrganizerID),
+				})
+			}
+		}
 	}
 
 	if strings.TrimSpace(req.TanggalMulai) != "" {
@@ -400,7 +510,7 @@ func UpdateEvent(c *fiber.Ctx) error {
 	updatePerformers := req.Performers != nil
 	if updatePerformers {
 		var err error
-		performersToInsert, err = processAndValidatePerformers(req.Performers)
+		performersToInsert, err = processAndValidatePerformers(c, req.Performers)
 		if err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
 				Message: err.Error(),
@@ -408,8 +518,8 @@ func UpdateEvent(c *fiber.Ctx) error {
 		}
 	}
 
-	// GORM Transaction
-	err = config.DB.Transaction(func(tx *gorm.DB) error {
+	// GORM Transaction: Simpan event dan performers secara atomic
+	err = config.DB.WithContext(c.UserContext()).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&existingEvent).Error; err != nil {
 			return err
 		}
@@ -438,8 +548,10 @@ func UpdateEvent(c *fiber.Ctx) error {
 		})
 	}
 
-	// Reload with associations
-	config.DB.Preload("Performers.Singer").
+	// Reload with associations (Venue, Singer, Band)
+	config.DB.WithContext(c.UserContext()).
+		Preload("Venue").
+		Preload("Performers.Singer").
 		Preload("Performers.Band").
 		First(&existingEvent, existingEvent.ID)
 
@@ -449,7 +561,7 @@ func UpdateEvent(c *fiber.Ctx) error {
 	})
 }
 
-// DeleteEvent - DELETE /api/events/:id (Admin only)
+// DeleteEvent - DELETE /api/events/:id (Admin or Organizer)
 func DeleteEvent(c *fiber.Ctx) error {
 	id, err := strconv.Atoi(c.Params("id"))
 	if err != nil || id <= 0 {
@@ -459,7 +571,7 @@ func DeleteEvent(c *fiber.Ctx) error {
 	}
 
 	var event models.Event
-	if err := config.DB.First(&event, id).Error; err != nil {
+	if err := config.DB.WithContext(c.UserContext()).First(&event, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(models.ErrorResponse{
 				Message: "Konser tidak ditemukan",
@@ -471,9 +583,36 @@ func DeleteEvent(c *fiber.Ctx) error {
 		})
 	}
 
-	// In database, event_performers has ON DELETE CASCADE on event_id.
-	// Deleting the event will automatically cascade deletion of event_performers.
-	if err := config.DB.Delete(&event).Error; err != nil {
+	// Pemeriksaan otorisasi: Organizer hanya boleh menghapus event miliknya
+	currentUserID, currentUserRole := getAuthUser(c)
+	if currentUserRole == "organizer" {
+		if event.OrganizerID == nil || *event.OrganizerID != currentUserID {
+			return c.Status(fiber.StatusForbidden).JSON(models.ErrorResponse{
+				Message: "Forbidden: Anda hanya diizinkan menghapus event milik organizer Anda sendiri",
+			})
+		}
+	}
+
+	// Jangan izinkan penghapusan jika tiket konser sudah dibuka untuk penjualan atau konser sudah berjalan
+	if event.PenjualanDibuka {
+		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
+			Message: "Konser tidak dapat dihapus karena tiket penjualan konser sudah dibuka",
+		})
+	}
+	if event.Status == "ongoing" || event.Status == "completed" {
+		return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
+			Message: fmt.Sprintf("Konser dengan status '%s' tidak dapat dihapus", event.Status),
+		})
+	}
+
+	if err := config.DB.WithContext(c.UserContext()).Delete(&event).Error; err != nil {
+		errLower := strings.ToLower(err.Error())
+		if strings.Contains(errLower, "violates foreign key constraint") ||
+			strings.Contains(errLower, "foreign key") {
+			return c.Status(fiber.StatusConflict).JSON(models.ErrorResponse{
+				Message: "Konser tidak dapat dihapus karena masih memiliki relasi data penting (tiket, transaksi, atau pembayaran)",
+			})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Message: "Gagal menghapus konser",
 			Error:   err.Error(),
