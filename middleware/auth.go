@@ -82,3 +82,23 @@ func AdminOnly(c *fiber.Ctx) error {
 
 	return c.Next()
 }
+
+// AdminOrOrganizer membatasi akses untuk pengguna dengan role 'admin', 'super_admin', atau 'organizer'
+func AdminOrOrganizer(c *fiber.Ctx) error {
+	userClaims, ok := c.Locals("user").(jwt.MapClaims)
+	if !ok {
+		return c.Status(fiber.StatusUnauthorized).JSON(models.ErrorResponse{
+			Message: "Unauthorized: Klaim token tidak ditemukan",
+		})
+	}
+
+	role, ok := userClaims["role"].(string)
+	roleLower := strings.ToLower(role)
+	if !ok || (roleLower != "admin" && roleLower != "super_admin" && roleLower != "organizer") {
+		return c.Status(fiber.StatusForbidden).JSON(models.ErrorResponse{
+			Message: "Forbidden: Akses ditolak. Hanya role 'admin', 'super_admin', atau 'organizer' yang diizinkan",
+		})
+	}
+
+	return c.Next()
+}

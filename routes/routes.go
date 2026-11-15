@@ -33,7 +33,7 @@ func SetupRoutes(app *fiber.App) {
 	// Event routes
 	api.Get("/events", controllers.GetEvents)
 	api.Get("/events/:id", controllers.GetEventByID)
-	api.Post("/events", middleware.Protected, middleware.AdminOnly, controllers.CreateEvent)
-	api.Put("/events/:id", middleware.Protected, middleware.AdminOnly, controllers.UpdateEvent)
-	api.Delete("/events/:id", middleware.Protected, middleware.AdminOnly, controllers.DeleteEvent)
+	api.Post("/events", middleware.Protected, middleware.AdminOrOrganizer, controllers.CreateEvent)
+	api.Put("/events/:id", middleware.Protected, middleware.AdminOrOrganizer, controllers.UpdateEvent)
+	api.Delete("/events/:id", middleware.Protected, middleware.AdminOrOrganizer, controllers.DeleteEvent)
 }
