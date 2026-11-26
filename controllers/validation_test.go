@@ -37,8 +37,8 @@ func TestIsValidPhone(t *testing.T) {
 		{"081234567890", true},
 		{"+6281234567890", true},
 		{"6281234567890", true},
-		{"0812345678", true}, // 10 digit
-		{"081234567", false}, // 9 digit (terlalu pendek)
+		{"0812345678", true},        // 10 digit
+		{"081234567", false},        // 9 digit (terlalu pendek)
 		{"0812345678901234", false}, // 16 digit (terlalu panjang)
 		{"not-a-number", false},
 		{"0812abc34567", false},
@@ -155,46 +155,46 @@ func TestGetJWTSecret(t *testing.T) {
 
 func TestExtractUserIDFromClaims(t *testing.T) {
 	tests := []struct {
-		name        string
-		claims      jwt.MapClaims
-		expectedID  int
-		expectedOK  bool
+		name       string
+		claims     jwt.MapClaims
+		expectedID int
+		expectedOK bool
 	}{
 		{
-			name:        "Float64 user_id (standard jwt unmarshal)",
-			claims:      jwt.MapClaims{"user_id": float64(12)},
-			expectedID:  12,
-			expectedOK:  true,
+			name:       "Float64 user_id (standard jwt unmarshal)",
+			claims:     jwt.MapClaims{"user_id": float64(12)},
+			expectedID: 12,
+			expectedOK: true,
 		},
 		{
-			name:        "Int user_id",
-			claims:      jwt.MapClaims{"user_id": 45},
-			expectedID:  45,
-			expectedOK:  true,
+			name:       "Int user_id",
+			claims:     jwt.MapClaims{"user_id": 45},
+			expectedID: 45,
+			expectedOK: true,
 		},
 		{
-			name:        "String user_id",
-			claims:      jwt.MapClaims{"user_id": "78"},
-			expectedID:  78,
-			expectedOK:  true,
+			name:       "String user_id",
+			claims:     jwt.MapClaims{"user_id": "78"},
+			expectedID: 78,
+			expectedOK: true,
 		},
 		{
-			name:        "Missing user_id",
-			claims:      jwt.MapClaims{"email": "test@example.com"},
-			expectedID:  0,
-			expectedOK:  false,
+			name:       "Missing user_id",
+			claims:     jwt.MapClaims{"email": "test@example.com"},
+			expectedID: 0,
+			expectedOK: false,
 		},
 		{
-			name:        "Invalid string user_id",
-			claims:      jwt.MapClaims{"user_id": "not-a-number"},
-			expectedID:  0,
-			expectedOK:  false,
+			name:       "Invalid string user_id",
+			claims:     jwt.MapClaims{"user_id": "not-a-number"},
+			expectedID: 0,
+			expectedOK: false,
 		},
 		{
-			name:        "Nil user_id",
-			claims:      jwt.MapClaims{"user_id": nil},
-			expectedID:  0,
-			expectedOK:  false,
+			name:       "Nil user_id",
+			claims:     jwt.MapClaims{"user_id": nil},
+			expectedID: 0,
+			expectedOK: false,
 		},
 	}
 
