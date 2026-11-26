@@ -17,13 +17,15 @@ type User struct {
 	ID        int       `gorm:"primaryKey;autoIncrement" json:"id"`
 	Nama      string    `gorm:"column:nama;not null" json:"nama"`
 	Email     string    `gorm:"column:email;unique;not null" json:"email"`
-	Password  string    `gorm:"column:password;not null" json:"-"` // tidak dikembalikan ke JSON
-	NoHP      string    `gorm:"column:no_hp" json:"no_hp"`
+	Password  string    `gorm:"column:password;not null" json:"-"`   // tidak dikembalikan ke JSON
+	NoHP      *string   `gorm:"column:no_hp" json:"no_hp,omitempty"` // nullable di database
 	RoleID    int       `gorm:"column:role_id;not null" json:"role_id"`
 	Role      string    `gorm:"->" json:"role,omitempty"` // populated dari JOIN
 	RoleData  *Role     `gorm:"foreignKey:RoleID" json:"role_data,omitempty"`
 	CreatedAt time.Time `gorm:"column:created_at;default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt time.Time `gorm:"column:updated_at;default:CURRENT_TIMESTAMP" json:"updated_at"`
+
+	OrganizerMembers []OrganizerMember `gorm:"foreignKey:UserID;references:ID" json:"organizer_members,omitempty"`
 }
 
 func (User) TableName() string {
@@ -33,12 +35,10 @@ func (User) TableName() string {
 // Request & Response structs
 
 type RegisterRequest struct {
-	Nama        string `json:"nama"`
-	Username    string `json:"username,omitempty"`
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	NoHP        string `json:"no_hp"`
-	PhoneNumber string `json:"phone_number,omitempty"`
+	Nama     string  `json:"nama"`
+	Email    string  `json:"email"`
+	Password string  `json:"password"`
+	NoHP     *string `json:"no_hp,omitempty"`
 }
 
 type LoginRequest struct {
