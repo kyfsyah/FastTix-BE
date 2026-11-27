@@ -225,6 +225,22 @@ func processAndValidatePerformers(c *fiber.Ctx, rawPerformers []models.Performer
 	return performers, nil
 }
 
+func validateEventCategoryExists(c *fiber.Ctx, categoryID int) (int, string) {
+	if categoryID <= 0 {
+		return fiber.StatusBadRequest, "category_id tidak valid"
+	}
+
+	var category models.EventCategory
+	if err := config.DB.WithContext(c.UserContext()).First(&category, categoryID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fiber.StatusBadRequest, fmt.Sprintf("Kategori event dengan ID %d tidak ditemukan", categoryID)
+		}
+		return fiber.StatusInternalServerError, "Gagal memverifikasi data kategori event"
+	}
+
+	return 0, ""
+}
+
 // CreateEvent - POST /api/events (Admin or Organizer)
 func CreateEvent(c *fiber.Ctx) error {
 	req := new(models.EventRequest)
@@ -237,6 +253,17 @@ func CreateEvent(c *fiber.Ctx) error {
 	if strings.TrimSpace(req.NamaKonser) == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
 			Message: "Nama konser wajib diisi",
+		})
+	}
+
+	if req.CategoryID == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+			Message: "category_id wajib diisi",
+		})
+	}
+	if statusCode, errMsg := validateEventCategoryExists(c, *req.CategoryID); statusCode != 0 {
+		return c.Status(statusCode).JSON(models.ErrorResponse{
+			Message: errMsg,
 		})
 	}
 
@@ -391,6 +418,7 @@ func CreateEvent(c *fiber.Ctx) error {
 		NamaKonser:      strings.TrimSpace(req.NamaKonser),
 		Deskripsi:       req.Deskripsi,
 		VenueID:         req.VenueID,
+		CategoryID:      *req.CategoryID,
 		OrganizerID:     organizerID,
 		TanggalMulai:    tMulai,
 		TanggalSelesai:  tSelesai,
@@ -419,10 +447,11 @@ func CreateEvent(c *fiber.Ctx) error {
 		})
 	}
 
-	// Reload event with Venue, Organizer, and Performers populated
+	// Reload event with Venue, Organizer, Category, and Performers populated
 	config.DB.WithContext(c.UserContext()).
 		Preload("Venue").
 		Preload("Organizer").
+		Preload("Category").
 		Preload("Performers.Singer").
 		Preload("Performers.Band").
 		First(&event, event.ID)
@@ -483,6 +512,7 @@ func GetEvents(c *fiber.Ctx) error {
 
 	if err := query.Preload("Venue").
 		Preload("Organizer").
+		Preload("Category").
 		Preload("Performers.Singer").
 		Preload("Performers.Band").
 		Order("tanggal_mulai ASC").
@@ -512,6 +542,7 @@ func GetEventByID(c *fiber.Ctx) error {
 	if err := config.DB.WithContext(c.UserContext()).
 		Preload("Venue").
 		Preload("Organizer").
+		Preload("Category").
 		Preload("Performers.Singer").
 		Preload("Performers.Band").
 		First(&event, id).Error; err != nil {
@@ -666,6 +697,15 @@ func UpdateEvent(c *fiber.Ctx) error {
 		existingEvent.VenueID = req.VenueID
 	}
 
+	if req.CategoryID != nil {
+		if statusCode, errMsg := validateEventCategoryExists(c, *req.CategoryID); statusCode != 0 {
+			return c.Status(statusCode).JSON(models.ErrorResponse{
+				Message: errMsg,
+			})
+		}
+		existingEvent.CategoryID = *req.CategoryID
+	}
+
 	if strings.TrimSpace(req.TanggalMulai) != "" {
 		tMulai, err := parseFlexibleDateTime(req.TanggalMulai)
 		if err != nil {
@@ -753,10 +793,11 @@ func UpdateEvent(c *fiber.Ctx) error {
 		})
 	}
 
-	// Reload with associations (Venue, Organizer, Singer, Band)
+	// Reload with associations (Venue, Organizer, Category, Singer, Band)
 	config.DB.WithContext(c.UserContext()).
 		Preload("Venue").
 		Preload("Organizer").
+		Preload("Category").
 		Preload("Performers.Singer").
 		Preload("Performers.Band").
 		First(&existingEvent, existingEvent.ID)

@@ -13,11 +13,13 @@ type Event struct {
 	PenjualanDibuka bool       `gorm:"column:penjualan_dibuka;not null;default:false" json:"penjualan_dibuka"`
 	OrganizerID     *int       `gorm:"column:organizer_id" json:"organizer_id,omitempty"`
 	VenueID         *int64     `gorm:"column:venue_id" json:"venue_id,omitempty"`
+	CategoryID      int        `gorm:"column:category_id;not null" json:"category_id"`
 	CreatedAt       time.Time  `gorm:"column:created_at;type:timestamptz;default:CURRENT_TIMESTAMP" json:"created_at"`
 	UpdatedAt       time.Time  `gorm:"column:updated_at;type:timestamptz;default:CURRENT_TIMESTAMP" json:"updated_at"`
 
 	Venue      *Venue           `gorm:"foreignKey:VenueID;references:ID" json:"venue,omitempty"`
 	Organizer  *Organizer       `gorm:"foreignKey:OrganizerID;references:ID" json:"organizer,omitempty"`
+	Category   *EventCategory   `gorm:"foreignKey:CategoryID;references:ID" json:"category,omitempty"`
 	Performers []EventPerformer `gorm:"foreignKey:EventID;references:ID" json:"performers,omitempty"`
 }
 
@@ -35,6 +37,7 @@ type EventRequest struct {
 	PenjualanDibuka *bool                  `json:"penjualan_dibuka"`
 	OrganizerID     *int                   `json:"organizer_id"`
 	VenueID         *int64                 `json:"venue_id"`
+	CategoryID      *int                   `json:"category_id"`
 	Performers      []PerformerItemRequest `json:"performers"`
 }
 
