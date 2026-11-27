@@ -36,4 +36,11 @@ func SetupRoutes(app *fiber.App) {
 	api.Post("/events", middleware.Protected, middleware.AdminOrOrganizer, controllers.CreateEvent)
 	api.Put("/events/:id", middleware.Protected, middleware.AdminOrOrganizer, controllers.UpdateEvent)
 	api.Delete("/events/:id", middleware.Protected, middleware.AdminOrOrganizer, controllers.DeleteEvent)
+
+	// Event Category routes
+	api.Get("/event-categories", controllers.GetAllEventCategories)
+	api.Get("/event-categories/:id", controllers.GetEventCategoryByID)
+	api.Post("/event-categories", middleware.Protected, middleware.AdminOnly, controllers.CreateEventCategory)
+	api.Put("/event-categories/:id", middleware.Protected, middleware.AdminOnly, controllers.UpdateEventCategory)
+	api.Delete("/event-categories/:id", middleware.Protected, middleware.AdminOnly, controllers.DeleteEventCategory)
 }
